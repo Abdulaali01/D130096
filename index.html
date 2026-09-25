@@ -476,9 +476,20 @@ async function openRecord(id){
 async function refresh(){records=(await all()).filter(r=>r.id!==DRAFT_ID);renderRecords()}
 /* ===== بحث اللوحات: الأرقام + الحروف بأي ترتيب، عربي أو إنجليزي ===== */
 const EN_PLATE={a:'ا',b:'ب',j:'ح',d:'د',r:'ر',s:'س',x:'ص',t:'ط',e:'ع',g:'ق',k:'ك',l:'ل',z:'م',n:'ن',h:'ه',u:'و',v:'ي'};
+/* أحرف تشبه الأرقام في قراءة الخط اليدوي: ه/o بجانب رقم = ٥ ، نقطة بجانب رقم = ٠ */
+function isDigitCh(ch){return ch!=null&&/[0-9٠-٩۰-۹]/.test(ch)}
+function fixLook(str){
+  const a=[...String(str??'')];let changed=true;
+  while(changed){changed=false;a.forEach((ch,i)=>{
+    const near=isDigitCh(a[i-1])||isDigitCh(a[i+1]);if(!near)return;
+    if(/[هoOＯ]/.test(ch)){a[i]='5';changed=true}
+    else if(/[.·•٫∙]/.test(ch)){a[i]='0';changed=true}
+  })}
+  return a.join('');
+}
 function plateParts(str){
   let digits='',letters='';
-  for(const ch of norm(str)){
+  for(const ch of norm(fixLook(str))){
     if(ch>='0'&&ch<='9')digits+=ch;
     else if(ch>='a'&&ch<='z'){if(EN_PLATE[ch])letters+=EN_PLATE[ch]}
     else if(/[ء-ي]/.test(ch))letters+=ch;
@@ -516,7 +527,7 @@ const scatterOn=()=>!!$('#scatterChk')?.checked;
 function toLatinDigit(ch){if(ch>='0'&&ch<='9')return ch;let i='٠١٢٣٤٥٦٧٨٩'.indexOf(ch);if(i>=0)return String(i);i='۰۱۲۳۴۵۶۷۸۹'.indexOf(ch);return i>=0?String(i):null}
 /* يلوّن الأرقام المطابقة داخل النص */
 function markDigits(text,qd,scatter){
-  const chars=[...String(text??'')],dig=[];chars.forEach((ch,i)=>{const d=toLatinDigit(ch);if(d!=null)dig.push([i,d])});
+  const chars=[...String(text??'')],look=[...fixLook(text)],dig=[];chars.forEach((ch,i)=>{const d=toLatinDigit(look[i]);if(d!=null)dig.push([i,d])});
   const pick=new Set();
   if(qd){if(!scatter){const k=dig.map(x=>x[1]).join('').indexOf(qd);if(k>=0)for(let j=0;j<qd.length;j++)pick.add(dig[k+j][0])}
   else for(const d of qd){const m=dig.find(x=>x[1]===d&&!pick.has(x[0]));if(m)pick.add(m[0])}}
