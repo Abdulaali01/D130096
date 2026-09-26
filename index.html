@@ -117,6 +117,7 @@
       <button class="btn secondary idx-btn" id="indexBtn" title="يقرأ عمود اللوحات من كل صورة مرة واحدة ليشملها البحث">🖼️ قراءة الصور للبحث</button>
       <div class="backup-bar">
         <button class="btn secondary" id="exportBtn" title="تنزيل نسخة احتياطية من كل السجلات">⬇️ نسخة احتياطية</button>
+        <button class="btn secondary" id="excelBtn" title="تصدير كل الجداول إلى Excel — كل سجل في ورقة">📊 Excel</button>
         <label class="btn secondary" style="text-align:center">⬆️ استيراد<input id="importInput" type="file" accept=".json,application/json" hidden></label>
       </div>
       <div class="search-bar" id="searchBar" hidden><span class="sum" id="searchSum"></span><div class="opts"><label><input type="checkbox" id="scatterChk"> الأرقام متفرقة (أي موقع وأي ترتيب)</label><label><input type="checkbox" id="cropChk" checked> مع صورة السطر</label><label><input type="checkbox" id="approxChk" checked> طباعة القريبة ≈</label></div><button class="btn primary" id="printResultsBtn">🖨️ طباعة النتائج PDF</button></div>
@@ -701,6 +702,81 @@ $('#importInput').onchange=async e=>{
   e.target.value='';
 };
 $('#backupBtn').onclick=()=>$('#exportBtn').click();
+
+/* ===== تصدير Excel: ورقة «الكل» + ورقة لكل سجل — بدون مكتبات خارجية ===== */
+const CRC_T=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+function crc32(u8){let c=0xFFFFFFFF;for(let i=0;i<u8.length;i++)c=CRC_T[(c^u8[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0}
+function zipStore(files){ /* files: [{name,data:string}] → Blob (ZIP بدون ضغط) */
+  const enc=new TextEncoder(),parts=[],central=[];let off=0;
+  for(const f of files){
+    const name=enc.encode(f.name),data=enc.encode(f.data),crc=crc32(data);
+    const h=new DataView(new ArrayBuffer(30));
+    h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x0800,true);h.setUint16(8,0,true);h.setUint16(10,0,true);h.setUint16(12,0x21,true);
+    h.setUint32(14,crc,true);h.setUint32(18,data.length,true);h.setUint32(22,data.length,true);h.setUint16(26,name.length,true);h.setUint16(28,0,true);
+    parts.push(new Uint8Array(h.buffer),name,data);
+    const c=new DataView(new ArrayBuffer(46));
+    c.setUint32(0,0x02014b50,true);c.setUint16(4,20,true);c.setUint16(6,20,true);c.setUint16(8,0x0800,true);c.setUint16(10,0,true);c.setUint16(12,0,true);c.setUint16(14,0x21,true);
+    c.setUint32(16,crc,true);c.setUint32(20,data.length,true);c.setUint32(24,data.length,true);c.setUint16(28,name.length,true);c.setUint32(42,off,true);
+    central.push(new Uint8Array(c.buffer),name);
+    off+=30+name.length+data.length;
+  }
+  const csize=central.reduce((a,x)=>a+x.length,0),e=new DataView(new ArrayBuffer(22));
+  e.setUint32(0,0x06054b50,true);e.setUint16(8,files.length,true);e.setUint16(10,files.length,true);e.setUint32(12,csize,true);e.setUint32(16,off,true);
+  return new Blob([...parts,...central,new Uint8Array(e.buffer)],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+}
+const xesc=v=>String(v??'').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function colName(i){let s='';i++;while(i){const m=(i-1)%26;s=String.fromCharCode(65+m)+s;i=(i-m-1)/26}return s}
+/* sheet: {name, rows:[[...]], widths:[], headerRow:index|-1, merges:['A1:E1'], filter:bool} */
+function sheetXML(sh){
+  const w=Math.max(1,...sh.rows.map(r=>r.length));
+  const rows=sh.rows.map((r,ri)=>`<row r="${ri+1}">${r.map((v,ci)=>v===''||v==null?'':`<c r="${colName(ci)}${ri+1}" t="inlineStr"${ri===sh.headerRow?' s="1"':ri===0&&sh.titleRow?' s="2"':''}><is><t xml:space="preserve">${xesc(v)}</t></is></c>`).join('')}</row>`).join('');
+  const cols=`<cols>${Array.from({length:w},(_,i)=>`<col min="${i+1}" max="${i+1}" width="${sh.widths?.[i]||16}" customWidth="1"/>`).join('')}</cols>`;
+  const pane=sh.headerRow>=0?`<pane ySplit="${sh.headerRow+1}" topLeftCell="A${sh.headerRow+2}" activePane="bottomLeft" state="frozen"/>`:'';
+  const filt=sh.filter&&sh.rows.length>1?`<autoFilter ref="A${sh.headerRow+1}:${colName(w-1)}${sh.rows.length}"/>`:'';
+  const mer=sh.merges?.length?`<mergeCells count="${sh.merges.length}">${sh.merges.map(m=>`<mergeCell ref="${m}"/>`).join('')}</mergeCells>`:'';
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetViews><sheetView rightToLeft="1" workbookViewId="0">${pane}</sheetView></sheetViews>${cols}<sheetData>${rows}</sheetData>${filt}${mer}</worksheet>`;
+}
+function buildXlsx(sheets){
+  const files=[
+    {name:'[Content_Types].xml',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`},
+    {name:'_rels/.rels',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`},
+    {name:'xl/workbook.xml',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${sheets.map((sh,i)=>`<sheet name="${xesc(sh.name)}" sheetId="${i+1}" r:id="rId${i+1}"/>`).join('')}</sheets>${sheets.some(sh=>sh.filter)?`<definedNames>${sheets.map((sh,i)=>sh.filter&&sh.rows.length>1?`<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${xesc(sh.name).replace(/'/g,"''")}'!$A$${sh.headerRow+1}:$${colName(Math.max(...sh.rows.map(r=>r.length))-1)}$${sh.rows.length}</definedName>`:'').join('')}</definedNames>`:''}</workbook>`},
+    {name:'xl/_rels/workbook.xml.rels',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId${sheets.length+1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`},
+    {name:'xl/styles.xml',data:`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="3"><font><sz val="11"/><name val="Arial"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Arial"/></font><font><b/><sz val="14"/><name val="Arial"/></font></fonts><fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF173F5F"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="center" vertical="center" readingOrder="2"/></xf><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" readingOrder="2"/></xf><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment horizontal="right" readingOrder="2"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>`}
+  ];
+  sheets.forEach((sh,i)=>files.push({name:`xl/worksheets/sheet${i+1}.xml`,data:sheetXML(sh)}));
+  return zipStore(files);
+}
+async function exportExcel(){
+  const btn=$('#excelBtn'),old=btn.textContent;btn.textContent='⏳ جارٍ التصدير…';btn.disabled=true;
+  try{
+    await autoSave();
+    const recs=(await all()).filter(r=>r.id!==DRAFT_ID).sort((a,b)=>a.updated-b.updated);
+    if(!recs.length)return toast('لا توجد سجلات للتصدير');
+    const used=new Set(['الكل']);
+    const sheetName=t=>{let base=String(t||'سجل').replace(/[\[\]:*?\/\\']/g,'-').trim().slice(0,26)||'سجل',n=base,i=2;while(used.has(n.toLowerCase()))n=base.slice(0,24)+' ('+(i++)+')';used.add(n.toLowerCase());return n};
+    const date=r=>new Date(r.updated).toLocaleString('ar-SA');
+    const anyRead=recs.some(r=>r.imgRead);
+    const readMap=r=>{const m=new Map();for(const ir of imgRows(r))m.set(ir.ri,ir.cands.join(' / '));return m};
+    const allRows=[['السجل','تاريخ الحفظ',...DEFAULT_HEADERS,...(anyRead?['اللوحة في قراءة الصورة']:[])]];
+    const sheets=[];
+    for(const r of recs){
+      const H=r.headers?.length?r.headers:DEFAULT_HEADERS,rm=readMap(r);
+      const ti=colIdx(H,/نوع|سيار/,1),ci=colIdx(H,/لون/,2),pi=colIdx(H,/لوح/,3),si=colIdx(H,/حال/,4);
+      (r.rows||[]).forEach((row,ri)=>allRows.push([r.title||'',date(r),row[0]??'',row[ti]??'',row[ci]??'',row[pi]??'',row[si]??'',...(anyRead?[rm.get(ri)||'']:[])]));
+      const hdr=[...H,...(r.imgRead?['اللوحة في قراءة الصورة']:[])],w=hdr.length;
+      sheets.push({name:sheetName(r.title),titleRow:true,headerRow:3,rows:[[r.title||''],['تاريخ الحفظ: '+date(r)],[],hdr,...(r.rows||[]).map((row,ri)=>[...H.map((_,c)=>row[c]??''),...(r.imgRead?[rm.get(ri)||'']:[])])],
+        widths:hdr.map((_,i)=>i===0?6:/حال|قراءة/.test(hdr[i])?26:18),merges:w>1?[`A1:${colName(w-1)}1`,`A2:${colName(w-1)}2`]:[]});
+    }
+    const book=[{name:'الكل',headerRow:0,filter:true,rows:allRows,widths:[22,24,6,18,12,18,26,26]},...sheets];
+    const blob=buildXlsx(book);
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`جرد-السيارات-${new Date().toISOString().slice(0,10)}.xlsx`;
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),10000);
+    toast(`✅ تم تصدير ${recs.length} سجل (${allRows.length-1} صف) إلى Excel`,4000);
+  }catch(e){toast('⚠️ تعذر التصدير: '+e.message,5000)}
+  finally{btn.textContent=old;btn.disabled=false}
+}
+$('#excelBtn').onclick=exportExcel;
 
 function responseText(data){if(typeof data.output_text==='string')return data.output_text;for(const item of data.output||[])for(const c of item.content||[])if(c.type==='output_text'&&c.text)return c.text;return ''}
 async function compareWithAI(){
