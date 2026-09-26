@@ -106,6 +106,7 @@
     .rv-nav button:disabled{opacity:.35}
     .rv-hint{background:#fff3cd;color:#6b4c00;border-radius:8px;padding:8px;font-size:.85rem}
     .rv-hint[hidden]{display:none}
+    .rv-align{display:flex;gap:8px;align-items:center;justify-content:center;font-size:.85rem;color:#cfe3ef;flex-wrap:wrap}.rv-align button{border:0;border-radius:8px;padding:9px 16px;font-weight:700;background:#f08c00;color:#fff;font-size:.95rem}
     .rv-pos{text-align:center;font-weight:700;font-size:1.05rem}
     .rv.mode-side .rv-row{display:none}.rv.mode-row .rv-side{display:none}
     /* ===== السجلات في الجوال: لوحة جانبية عمودية من اليسار ===== */
@@ -199,7 +200,7 @@
   <div class="rv-bar">
     <b id="rvTitle">مراجعة الصورة</b>
     <span class="rv-modes"><button data-mode="side">↔ جنب بعض</button><button data-mode="row">▭ صف بصف</button></span>
-    <button id="rvCalib" title="ضبط الأسطر">📏</button><button id="rvZoomOut" title="تصغير">−</button><button id="rvZoomIn" title="تكبير">+</button>
+    <button id="rvUp" title="السطر المظلل غير مطابق؟ حرّكه لأعلى (لهذا الصف وما بعده)">▲ سطر</button><button id="rvDown" title="حرّك السطر المظلل لأسفل (لهذا الصف وما بعده)">▼ سطر</button><button id="rvCalib" title="ضبط الأسطر">📏</button><button id="rvZoomOut" title="تصغير">−</button><button id="rvZoomIn" title="تكبير">+</button>
     <button id="rvClose">✓ تم</button>
   </div>
   <div class="rv-side">
@@ -210,6 +211,7 @@
     <div class="rv-strip" id="rvStripWrap"><canvas id="rvStrip"></canvas></div>
     <div class="rv-hint" id="rvHint" hidden>القص تقريبي — اضغط 📏 ثم المس منتصف الصف الأول ثم آخر صف في الصورة ليصبح دقيقًا.</div>
     <div class="rv-pos" id="rvPos"></div>
+    <div class="rv-align">السطر المظلل لا يطابق الجدول؟ <button id="rvUp2">▲ أعلى</button><button id="rvDown2">▼ أسفل</button></div>
     <label>نوع السيارة<input id="rvType" autocomplete="off"></label>
     <label>رقم اللوحة<input id="rvPlate" autocomplete="off" enterkeyhint="next"></label>
     <div class="rv-nav"><button id="rvPrev">السابق ▶</button><button id="rvNext">◀ التالي</button></div>
@@ -472,16 +474,21 @@ let recCalib=null,hitRow=-1,calibStep=0,calibFirst=0;
 function globalCalib(){try{return JSON.parse(lsGet(CALIB_KEY)||'null')}catch(e){return null}}
 function activeCalib(){return recCalib||globalCalib()}
 /* موقع الصف من الضبط: خطوط الجدول المكتشفة (دقيق) أو نقطتا الضبط اليدوي */
+/* إزاحة يدوية (▲▼) تنطبق على الصف ومابعده */
+function shiftFor(c,i){let o=0;for(const s of (c?.shifts||[]))if(i>=s.from)o+=s.d;return o}
 function bandFromCalib(c,i){
   if(!c)return null;
+  i+=shiftFor(c,i);
   if(Array.isArray(c.lines)&&c.lines.length>1){
     const L=c.lines,k=L.length-1;
+    if(i<0){const g=L[1]-L[0],top=L[0]+i*g;return{c:top+g/2,h:g,angle:c.angle||0}}
     if(i<k)return{c:(L[i]+L[i+1])/2,h:L[i+1]-L[i],angle:c.angle||0};
     const g=L[k]-L[k-1],top=L[k]+(i-k)*g;return{c:top+g/2,h:g,angle:c.angle||0};
   }
   if(c.n>1){const step=(c.l-c.f)/(c.n-1);return{c:c.f+i*step,h:Math.max(.008,Math.abs(step)),angle:0}}
   return null;
 }
+function rowNum(i){const raw=String($('#tbody').rows[i]?.cells[0]?.querySelector('input')?.value??'').trim();return /^[0-9٠-٩۰-۹]{1,3}$/.test(raw)?raw:String(i+1)}
 function rowBand(i){
   const n=$('#tbody').rows.length||1,c=activeCalib(),b=bandFromCalib(c,i);
   if(b)return{...b,exact:!!recCalib,auto:!!c.lines};
@@ -548,7 +555,7 @@ async function autoCalibrate(force){
     lineCache.set(key,res);
   }
   if(!res)return false;
-  recCalib=res;updateCalibBtn();
+  recCalib={...res,shifts:recCalib?.shifts};updateCalibBtn();
   if(currentId)markDirty();
   if(focusRowIndex>=0)showBand(focusRowIndex,'focus');else if(hitRow>=0)showBand(hitRow,'hit');
   if(!$('#rv').hidden)rvSelect(rvIdx,true);
@@ -565,7 +572,7 @@ function bandAt(c,h,label,kind){
 }
 function showBand(i,kind){
   if(!imageData||i<0)return hideBand();
-  const b=rowBand(i),tr=$('#tbody').rows[i],num=tr?tr.cells[0].querySelector('input').value:(i+1);
+  const b=rowBand(i),num=rowNum(i);
   bandAngle=b.angle||0;
   bandAt(b.c,b.h,(kind==='hit'?'🔎 ':'')+'صف '+num+(b.none?' (تقريبي — اضغط 📏)':b.exact?'':' (ضبط عام)'),kind);
 }
@@ -1005,7 +1012,7 @@ function buildRvList(){
   const{ti,pi}=rvCols();
   $('#rvList').innerHTML=[...$('#tbody').rows].map((tr,i)=>{
     const v=c=>tr.cells[c]?.querySelector('input')?.value??'';
-    return `<div class="rv-item" data-i="${i}"><span class="n">${esc(v(0)||i+1)}</span><div><input data-i="${i}" data-c="${ti}" value="${esc(v(ti))}" placeholder="نوع السيارة" class="${isChanged(i,ti)?'chg':''}"><input data-i="${i}" data-c="${pi}" value="${esc(v(pi))}" placeholder="رقم اللوحة" class="${isChanged(i,pi)?'chg':''}" enterkeyhint="next"></div></div>`;
+    return `<div class="rv-item" data-i="${i}"><span class="n">${esc(rowNum(i))}</span><div><input data-i="${i}" data-c="${ti}" value="${esc(v(ti))}" placeholder="نوع السيارة" class="${isChanged(i,ti)?'chg':''}"><input data-i="${i}" data-c="${pi}" value="${esc(v(pi))}" placeholder="رقم اللوحة" class="${isChanged(i,pi)?'chg':''}" enterkeyhint="next"></div></div>`;
   }).join('');
 }
 $('#rvList').addEventListener('input',e=>{const t=e.target;if(!t.matches('input'))return;setTbl(+t.dataset.i,+t.dataset.c,t.value);t.classList.add('chg')});
@@ -1026,7 +1033,7 @@ function rvSelect(i,noFocus){
     const tr=$('#tbody').rows[rvIdx],v=c=>tr.cells[c]?.querySelector('input')?.value??'';
     $('#rvType').value=v(ti);$('#rvPlate').value=v(pi);
     $('#rvType').classList.toggle('chg',isChanged(rvIdx,ti));$('#rvPlate').classList.toggle('chg',isChanged(rvIdx,pi));
-    $('#rvPos').textContent=`صف ${v(0)||rvIdx+1} من ${n}`;
+    $('#rvPos').textContent=`صف ${rowNum(rvIdx)} من ${n}`;
     $('#rvPrev').disabled=rvIdx===0;$('#rvNext').disabled=rvIdx===n-1;
     $('#rvHint').hidden=!!activeCalib();
     renderStrip();
@@ -1065,6 +1072,16 @@ $('#rvCalib').onclick=async()=>{
   calibStep=1;$('#rvImgWrap').classList.add('calibrating');hideBand();
   toast('① المس في الصورة منتصف الصف الأول',8000);
 };
+function shiftRow(d){
+  if(!recCalib){const g=globalCalib();if(!g)return toast('اضغط 📏 أولًا لضبط الأسطر');recCalib=JSON.parse(JSON.stringify(g))}
+  const sh=recCalib.shifts=(recCalib.shifts||[]);
+  const e=sh.find(x=>x.from===rvIdx);if(e){e.d+=d;if(!e.d)sh.splice(sh.indexOf(e),1)}else sh.push({from:rvIdx,d});
+  sh.sort((a,b)=>a.from-b.from);
+  markDirty();rvSelect(rvIdx,true);
+  toast(`تم تحريك السطر ${d<0?'لأعلى':'لأسفل'} — ينطبق على صف ${rowNum(rvIdx)} وما بعده`,2500);
+}
+['#rvUp','#rvUp2'].forEach(id=>$(id).onclick=()=>shiftRow(-1));
+['#rvDown','#rvDown2'].forEach(id=>$(id).onclick=()=>shiftRow(1));
 $('#rvPrev').onclick=()=>rvSelect(rvIdx-1);
 $('#rvNext').onclick=()=>rvSelect(rvIdx+1);
 $('#rvType').addEventListener('input',()=>{setTbl(rvIdx,rvCols().ti,$('#rvType').value);$('#rvType').classList.add('chg')});
